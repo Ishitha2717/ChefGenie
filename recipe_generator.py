@@ -5,7 +5,7 @@ import requests
 OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_MODEL = "qwen2.5:3b"
 
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = "gemini-3.8-flash"
 GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
     f"{GEMINI_MODEL}:generateContent"
@@ -48,7 +48,7 @@ Dietary preference: {dietary_preference}
 Servings: {servings}
 Maximum total preparation and cooking time: {cooking_time} minutes
 
-Instructions:
+Rules:
 1. Give a suitable recipe name.
 2. List ingredients with quantities for the requested servings.
 3. Give numbered cooking instructions.
@@ -56,7 +56,7 @@ Instructions:
 5. Try to respect the requested time limit.
 6. Respect the cuisine and dietary preferences.
 7. Do not include unrelated recipes.
-8. Do not claim that the recipe is guaranteed safe.
+8. Do not claim the recipe is guaranteed safe.
 
 Use this format:
 
@@ -76,6 +76,34 @@ Instructions:
 
         return generate_with_ollama(prompt)
 
+    except requests.exceptions.HTTPError as error:
+        status = error.response.status_code if error.response is not None else 0
+
+        if status == 401:
+            return (
+                "Gemini authentication failed (401). Check that the "
+                "GEMINI_API_KEY secret is valid and active."
+            )
+
+        if status == 403:
+            return (
+                "Gemini access denied (403). Check API permissions "
+                "and project access."
+            )
+
+        if status == 404:
+            return (
+                f"Gemini returned 404 for model {GEMINI_MODEL}. "
+                "Check whether the model is available to your API key."
+            )
+
+        if status == 429:
+            return (
+                "Gemini usage limit reached. Please wait and try again."
+            )
+
+        return f"Recipe service returned HTTP {status}."
+
     except requests.exceptions.ConnectionError:
         return (
             "Cannot connect to the recipe-generation service. "
@@ -86,8 +114,8 @@ Instructions:
     except requests.exceptions.Timeout:
         return "Recipe generation timed out. Please try again."
 
-    except requests.exceptions.RequestException as error:
-        return f"Recipe generation failed: {error}"
+    except requests.exceptions.RequestException:
+        return "A network error occurred during recipe generation."
 
     except (KeyError, IndexError, TypeError, ValueError):
         return (
@@ -99,7 +127,10 @@ Instructions:
 def generate_with_gemini(prompt, api_key):
     response = requests.post(
         GEMINI_URL,
-        params={"key": api_key},
+        headers={
+            "x-goog-api-key": api_key,
+            "Content-Type": "application/json",
+        },
         json={
             "contents": [
                 {
@@ -118,7 +149,12 @@ def generate_with_gemini(prompt, api_key):
     response.raise_for_status()
     data = response.json()
 
-    return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+
+    if not text:
+        return "No recipe was generated. Please try again."
+
+    return text
 
 
 def generate_with_ollama(prompt):
