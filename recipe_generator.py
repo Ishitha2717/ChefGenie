@@ -1,8 +1,28 @@
 
+import os
 import requests
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
-MODEL_NAME = "qwen2.5:3b"
+OLLAMA_MODEL = "qwen2.5:3b"
+
+GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_URL = (
+    "https://generativelanguage.googleapis.com/v1beta/models/"
+    f"{GEMINI_MODEL}:generateContent"
+)
+
+
+def get_gemini_api_key():
+    api_key = os.getenv("GEMINI_API_KEY")
+
+    if api_key:
+        return api_key
+
+    try:
+        import streamlit as st
+        return st.secrets.get("GEMINI_API_KEY", "")
+    except Exception:
+        return ""
 
 
 def generate_recipe(
@@ -13,7 +33,7 @@ def generate_recipe(
     servings=2,
     cooking_time=30,
 ):
-    if not ingredients.strip():
+    if not ingredients or not ingredients.strip():
         return "Please enter at least one ingredient."
 
     prompt = f"""
@@ -26,20 +46,19 @@ Cuisine: {cuisine}
 Meal type: {meal_type}
 Dietary preference: {dietary_preference}
 Servings: {servings}
-Maximum total cooking time: {cooking_time} minutes
+Maximum total preparation and cooking time: {cooking_time} minutes
 
-Follow these rules:
+Instructions:
 1. Give a suitable recipe name.
-2. List ingredients with quantities for exactly {servings} servings.
+2. List ingredients with quantities for the requested servings.
 3. Give numbered cooking instructions.
-4. Keep the estimated total preparation and cooking time within
-   {cooking_time} minutes, if feasible.
-5. Respect the requested cuisine and dietary preference.
-6. Do not include unrelated recipes, advertisements, or nutrition claims.
-7. If the requirements cannot reasonably be met, explain why.
+4. Provide separate preparation and cooking times.
+5. Try to respect the requested time limit.
+6. Respect the cuisine and dietary preferences.
+7. Do not include unrelated recipes.
 8. Do not claim that the recipe is guaranteed safe.
 
-Use this exact format:
+Use this format:
 
 Recipe Name:
 Preparation Time:
@@ -49,36 +68,19 @@ Ingredients:
 Instructions:
 """
 
-    payload = {
-        "model": MODEL_NAME,
-        "prompt": prompt,
-        "stream": False,
-        "options": {
-            "temperature": 0.8,
-            "top_k": 50,
-            "num_predict": 500,
-        },
-    }
+    api_key = get_gemini_api_key()
 
     try:
-        response = requests.post(
-            OLLAMA_URL,
-            json=payload,
-            timeout=180,
-        )
-        response.raise_for_status()
+        if api_key:
+            return generate_with_gemini(prompt, api_key)
 
-        result = response.json().get("response", "").strip()
-
-        if not result:
-            return "No recipe was generated. Please try again."
-
-        return result
+        return generate_with_ollama(prompt)
 
     except requests.exceptions.ConnectionError:
         return (
-            "Cannot connect to Ollama. "
-            "Make sure the Ollama service is running."
+            "Cannot connect to the recipe-generation service. "
+            "Check your internet connection or make sure Ollama "
+            "is running for local generation."
         )
 
     except requests.exceptions.Timeout:
@@ -86,3 +88,59 @@ Instructions:
 
     except requests.exceptions.RequestException as error:
         return f"Recipe generation failed: {error}"
+
+    except (KeyError, IndexError, TypeError, ValueError):
+        return (
+            "The model returned an unexpected response. "
+            "Please try generating the recipe again."
+        )
+
+
+def generate_with_gemini(prompt, api_key):
+    response = requests.post(
+        GEMINI_URL,
+        params={"key": api_key},
+        json={
+            "contents": [
+                {
+                    "parts": [{"text": prompt}]
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0.8,
+                "topK": 50,
+                "maxOutputTokens": 500,
+            },
+        },
+        timeout=120,
+    )
+
+    response.raise_for_status()
+    data = response.json()
+
+    return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+
+
+def generate_with_ollama(prompt):
+    response = requests.post(
+        OLLAMA_URL,
+        json={
+            "model": OLLAMA_MODEL,
+            "prompt": prompt,
+            "stream": False,
+            "options": {
+                "temperature": 0.8,
+                "top_k": 50,
+                "num_predict": 500,
+            },
+        },
+        timeout=180,
+    )
+
+    response.raise_for_status()
+    result = response.json().get("response", "").strip()
+
+    if not result:
+        return "No recipe was generated. Please try again."
+
+    return result
